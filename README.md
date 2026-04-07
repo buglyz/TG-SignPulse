@@ -44,10 +44,15 @@
 
 请确保你的仓库根目录下包含以下内容：
  frontend/：前端源代码文件夹（包含 package.json 和 src 等），用于构建管理面板  。
+ 
  backend/：后端 FastAPI 逻辑代码  。
+ 
  tg_signer/：Telegram 自动化的核心代码库  。
+ 
  docker/：包含 entrypoint.sh 启动脚本的文件夹  。
+ 
  pyproject.toml：Python 项目的依赖配置文件  。
+ 
  Dockerfile：用于定义 Hugging Face 运行环境的配置文件（建议使用我之前为你修改的那个版本）。
 
 ## 4. 运行状态与避坑记录
