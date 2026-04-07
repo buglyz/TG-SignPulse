@@ -1,83 +1,39 @@
-﻿FROM node:20-slim AS frontend-builder
-
+# 使用你提供的基础镜像（如果已经推送到容器仓库）或直接基于源码构建
+FROM node:20-slim AS frontend-builder
 WORKDIR /frontend
-
-# Copy dependency manifests first for better layer caching.
 COPY frontend/package*.json ./
 RUN npm ci
-
 COPY frontend/ ./
 RUN npm run build
 
-
 FROM python:3.12-slim AS app
-
-ENV PYTHONUNBUFFERED=1 \
-  PYTHONDONTWRITEBYTECODE=1 \
-  PIP_DISABLE_PIP_VERSION_CHECK=1 \
-  PIP_NO_CACHE_DIR=1 \
-  PORT=8080 \
-  TZ=Asia/Shanghai
+# 关键点：修改端口为 HF 要求的 7860
+ENV PORT=7860 \
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai \
+    TG_SESSION_MODE=string
 
 WORKDIR /app
-
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential tzdata gosu && \
-  rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*
 
-# Copy minimal metadata first for better layer caching.
 COPY pyproject.toml ./
-COPY tg_signer/__init__.py ./tg_signer/__init__.py
+RUN pip install --no-cache-dir "pydantic<2" "fastapi==0.109.2" "bcrypt==4.0.1"
 
-# Install core deps (FastAPI uses Pydantic v1 here).
-RUN pip install --no-cache-dir "pydantic<2" "fastapi==0.109.2"
-
-# Install bcrypt early to keep backend requirements consistent.
-RUN pip install --no-cache-dir "bcrypt==4.0.1"
-
-# Install project and runtime deps.
 COPY . /app
-RUN pip install --no-cache-dir . && \
-  pip install --no-cache-dir \
-  uvicorn[standard] \
-  sqlalchemy \
-  "passlib[bcrypt]==1.7.4" \
-  "python-jose[cryptography]" \
-  pyotp \
-  qrcode[pil] \
-  apscheduler \
-  python-multipart
+RUN pip install --no-cache-dir . uvicorn[standard] sqlalchemy "passlib[bcrypt]==1.7.4" "python-jose[cryptography]" pyotp qrcode[pil] apscheduler python-multipart psycopg2-binary
 
-# Install tgcrypto only on amd64 to avoid arm64 build failures.
-ARG TARGETPLATFORM
-RUN if [ "${TARGETPLATFORM:-}" = "linux/amd64" ] || [ "$(uname -m)" = "x86_64" ]; then \
-    pip install --no-cache-dir tgcrypto; \
-  else \
-    echo "Skipping tgcrypto on ${TARGETPLATFORM:-unknown}"; \
-  fi
-
-# Frontend static files served from /web.
+# Frontend 静态文件
 RUN mkdir -p /web
 COPY --from=frontend-builder /frontend/out /web
 
-# Data dir (mapped via volume).
-RUN mkdir -p /data
+# 修改权限以适应 HF 运行环境
+RUN mkdir -p /data && chmod 777 /data
 
-# Non-root user.
-ARG APP_UID=10001
-ARG APP_GID=10001
-RUN groupadd -r -g ${APP_GID} app && \
-  useradd -r -u ${APP_UID} -g app -d /app -s /usr/sbin/nologin app && \
-  chown -R app:app /data
+# 暴露 7860
+EXPOSE 7860
 
-# Runtime entrypoint auto-adapts to mounted /data ownership.
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 8080
-
-# Healthcheck uses the PORT env var.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.getenv(\"PORT\", \"8080\")}/healthz').read()"
-
-# Start with env-driven PORT (Zeabur sets this automatically).
 ENTRYPOINT ["/entrypoint.sh"]
