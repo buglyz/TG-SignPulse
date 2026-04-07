@@ -28,15 +28,11 @@
 | `DATABASE_URL` | `postgresql://postgres:pass...` | Supabase 数据库连接字符串 |
 | `APP_SECRET_KEY` | `your_random_secret_string` | 应用安全密钥，用于加密或鉴权 |
 | `TZ` | `Asia/Shanghai` | 设定容器时区为北京时间 |
-DATABASE_URL: 填入你在第一步获取的 Supabase URI。
-
-APP_SECRET_KEY: 随机生成的一串字符（用于面板加密）。
-
-ADMIN_PASSWORD: 你登录面板的自定义密码。
-
-TG_SESSION_MODE: 设置为 string（这确保了 Telegram 的登录状态保存在数据库中，而不是本地文件）。
-
-APP_HOST: 设置为 0.0.0.0
+|`DATABASE_URL`| 填入你在第一步获取的 Supabase URI|
+|`APP_SECRET_KEY`|随机生成的一串字符（用于面板加密）|
+|`ADMIN_PASSWORD`| 你登录面板的自定义密码|
+|`TG_SESSION_MODE`| 设置为 string（这确保了 Telegram 的登录状态保存在数据库中，而不是本地文件）|
+|`APP_HOST`| 设置为 0.0.0.0|
 
 ## 3. Hugging Face 部署流程
 
@@ -47,23 +43,12 @@ APP_HOST: 设置为 0.0.0.0
 5. 观察运行日志，出现 `INFO: Application startup complete` 且没有超时错误，即代表后端及数据库连接成功。
 
 请确保你的仓库根目录下包含以下内容：
-
-
-frontend/：前端源代码文件夹（包含 package.json 和 src 等），用于构建管理面板  。
-
-
-backend/：后端 FastAPI 逻辑代码  。
-
-
-tg_signer/：Telegram 自动化的核心代码库  。
-
-
-docker/：包含 entrypoint.sh 启动脚本的文件夹  。
-
-
-pyproject.toml：Python 项目的依赖配置文件  。
-
-Dockerfile：用于定义 Hugging Face 运行环境的配置文件（建议使用我之前为你修改的那个版本）。
+ frontend/：前端源代码文件夹（包含 package.json 和 src 等），用于构建管理面板  。
+ backend/：后端 FastAPI 逻辑代码  。
+ tg_signer/：Telegram 自动化的核心代码库  。
+ docker/：包含 entrypoint.sh 启动脚本的文件夹  。
+ pyproject.toml：Python 项目的依赖配置文件  。
+ Dockerfile：用于定义 Hugging Face 运行环境的配置文件（建议使用我之前为你修改的那个版本）。
 
 ## 4. 运行状态与避坑记录
 
