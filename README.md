@@ -10,6 +10,7 @@ pinned: false
 
 # TG-SignPulse 部署说明
  说明：仅供本人自用，不会随原作者更新
+
 推荐部署方式为：
 
 **Hugging Face Spaces（Docker） + Supabase（PostgreSQL）**
