@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from backend.utils.storage import get_initial_data_dir, get_writable_base_dir
 
@@ -49,7 +50,15 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        external_database_url = (os.getenv("DATABASE_URL") or "").strip()
+        if external_database_url:
+            return external_database_url
         return f"sqlite:///{self.resolve_db_path()}?check_same_thread=False"
+
+    @property
+    def is_sqlite(self) -> bool:
+        scheme = urlparse(self.database_url).scheme.lower()
+        return scheme in {"sqlite", ""}
 
     def resolve_db_path(self) -> Path:
         return self.db_path or self.resolve_base_dir() / "db.sqlite"

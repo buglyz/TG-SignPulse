@@ -15,6 +15,8 @@ class Account(Base):
     account_name = Column(String(100), unique=True, nullable=False, index=True)
     api_id = Column(String(64), nullable=False)
     api_hash = Column(String(128), nullable=False)
+    session_string = Column(Text, nullable=True)
+    remark = Column(Text, nullable=True)
     proxy = Column(Text, nullable=True)  # store JSON string for proxy config
     status = Column(String(32), default="idle", nullable=False)
     last_login_at = Column(DateTime, nullable=True)

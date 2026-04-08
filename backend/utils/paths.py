@@ -10,5 +10,6 @@ def ensure_data_dirs(settings: Settings) -> None:
     (settings.resolve_session_dir()).mkdir(parents=True, exist_ok=True)
     (settings.resolve_logs_dir()).mkdir(parents=True, exist_ok=True)
 
-    db_path: Path = settings.resolve_db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if settings.is_sqlite:
+        db_path: Path = settings.resolve_db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)

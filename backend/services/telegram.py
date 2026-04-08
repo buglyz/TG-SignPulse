@@ -12,6 +12,7 @@ import os
 import secrets
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.core.config import get_settings
@@ -102,14 +103,21 @@ class TelegramService:
                         continue
                     if account_name in pending_accounts:
                         continue
-                    session_file = self.session_dir / f"{account_name}.session_string"
+                    has_db_session = bool(get_account_session_string(account_name))
+                    session_file = (
+                        Path("database") / f"{account_name}.session_string"
+                        if has_db_session
+                        else self.session_dir / f"{account_name}.session_string"
+                    )
                     profile = get_account_profile(account_name)
                     accounts.append(
                         {
                             "name": account_name,
                             "session_file": str(session_file),
-                            "exists": session_file.exists(),
-                            "size": session_file.stat().st_size
+                            "exists": has_db_session or session_file.exists(),
+                            "size": len(get_account_session_string(account_name) or "")
+                            if has_db_session
+                            else session_file.stat().st_size
                             if session_file.exists()
                             else 0,
                             "remark": profile.get("remark"),
@@ -722,7 +730,6 @@ class TelegramService:
             if not session_string:
                 raise ValueError("导出 session_string 失败")
             set_account_session_string(account_name, session_string)
-            save_session_string_file(self.session_dir, account_name, session_string)
             self._accounts_cache = None
 
         def _persist_proxy_setting() -> None:
@@ -848,7 +855,6 @@ class TelegramService:
             if not session_string:
                 raise ValueError("导出 session_string 失败")
             set_account_session_string(account_name, session_string)
-            save_session_string_file(self.session_dir, account_name, session_string)
         else:
             # 即使在 file 模式，也尝试保存 session_string 作为降级方案
             try:

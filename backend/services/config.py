@@ -10,6 +10,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.core.config import get_settings
+from backend.utils.persisted_state import (
+    CATEGORY_AI_CONFIG,
+    CATEGORY_GLOBAL_SETTINGS,
+    CATEGORY_MONITOR_TASK,
+    CATEGORY_SIGN_TASK,
+    CATEGORY_TELEGRAM_CONFIG,
+    delete_state,
+    list_state_items,
+    load_state_json,
+    save_state_json,
+)
 from backend.utils.storage import (
     clear_data_dir_override,
     is_writable_dir,
@@ -32,9 +43,50 @@ class ConfigService:
         self.signs_dir.mkdir(parents=True, exist_ok=True)
         self.monitors_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _write_json_file(path: Path, payload: Dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _task_scope(account_name: Optional[str] = None) -> str:
+        return (account_name or "").strip()
+
+    def _sign_task_from_db(self, task_name: str, account_name: Optional[str] = None) -> Optional[Dict]:
+        payload = load_state_json(
+            CATEGORY_SIGN_TASK,
+            task_name,
+            scope=self._task_scope(account_name),
+        )
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def _monitor_task_from_db(self, task_name: str) -> Optional[Dict]:
+        payload = load_state_json(CATEGORY_MONITOR_TASK, task_name, scope="")
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def _persist_sign_task_db(self, task_name: str, config: Dict) -> None:
+        save_state_json(
+            CATEGORY_SIGN_TASK,
+            task_name,
+            config,
+            scope=self._task_scope(config.get("account_name")),
+        )
+
+    def _persist_monitor_task_db(self, task_name: str, config: Dict) -> None:
+        save_state_json(CATEGORY_MONITOR_TASK, task_name, config, scope="")
+
     def list_sign_tasks(self) -> List[str]:
         """获取所有签到任务名称列表"""
         tasks = []
+
+        for task_name, scope, payload in list_state_items(CATEGORY_SIGN_TASK):
+            if isinstance(payload, dict):
+                tasks.append(task_name)
 
         if self.signs_dir.exists():
             # 扫描顶层目录 (兼容旧版)
@@ -54,6 +106,10 @@ class ConfigService:
     def list_monitor_tasks(self) -> List[str]:
         """获取所有监控任务名称列表"""
         tasks = []
+
+        for task_name, _scope, payload in list_state_items(CATEGORY_MONITOR_TASK):
+            if isinstance(payload, dict):
+                tasks.append(task_name)
 
         if self.monitors_dir.exists():
             for task_dir in self.monitors_dir.iterdir():
@@ -94,27 +150,32 @@ class ConfigService:
             account_name: 账号名称（可选）
 
         Returns:
-            配置字典，如果不存在则返回 None
+            配置字典，不存在时返回 None
         """
         if account_name:
             task_dir = self.signs_dir / account_name / task_name
             config_file = task_dir / "config.json"
-            if not config_file.exists():
-                return None
         else:
             matches = self._find_sign_task_dirs(task_name)
-            if not matches:
-                return None
             if len(matches) > 1:
                 raise ValueError(f"任务 {task_name} 存在于多个账号中，请指定 account_name")
-            task_dir = matches[0]
-            config_file = task_dir / "config.json"
+            config_file = matches[0] / "config.json" if matches else None
 
-        try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return None
+        if config_file and config_file.exists():
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if isinstance(payload, dict):
+                    self._persist_sign_task_db(task_name, payload)
+                return payload if isinstance(payload, dict) else None
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        db_config = self._sign_task_from_db(task_name, account_name=account_name)
+        if isinstance(db_config, dict):
+            self.save_sign_config(task_name, db_config)
+            return db_config
+        return None
 
     def save_sign_config(self, task_name: str, config: Dict) -> bool:
         """
@@ -127,6 +188,8 @@ class ConfigService:
         Returns:
             是否成功保存
         """
+        self._persist_sign_task_db(task_name, config)
+
         account_name = config.get("account_name", "")
 
         if account_name:
@@ -159,6 +222,12 @@ class ConfigService:
         Returns:
             是否成功删除
         """
+        deleted_from_db = delete_state(
+            CATEGORY_SIGN_TASK,
+            task_name,
+            scope=self._task_scope(account_name),
+        )
+
         if account_name:
             task_dir = self.signs_dir / account_name / task_name
             if not task_dir.exists():
@@ -190,7 +259,7 @@ class ConfigService:
 
             return True
         except OSError:
-            return False
+            return deleted_from_db
 
     def export_sign_task(
         self, task_name: str, account_name: Optional[str] = None
@@ -272,6 +341,21 @@ class ConfigService:
             "monitors": {},
             "settings": {}, # 新增 settings 字段
         }
+
+        for task_name, scope, config in list_state_items(CATEGORY_SIGN_TASK):
+            if not isinstance(config, dict):
+                continue
+            task_config = dict(config)
+            task_config.pop("last_run", None)
+            key = f"{task_name}@{scope}" if scope else task_name
+            all_configs["signs"][key] = task_config
+
+        for task_name, _scope, config in list_state_items(CATEGORY_MONITOR_TASK):
+            if not isinstance(config, dict):
+                continue
+            task_config = dict(config)
+            task_config.pop("last_run", None)
+            all_configs["monitors"][task_name] = task_config
 
         # 导出所有签到任务
         if self.signs_dir.exists():
@@ -389,6 +473,7 @@ class ConfigService:
                 try:
                     with open(config_file, "w", encoding="utf-8") as f:
                         json.dump(config, f, ensure_ascii=False, indent=2)
+                    self._persist_monitor_task_db(task_name, config)
                     result["monitors_imported"] += 1
                 except OSError:
                     result["errors"].append(
@@ -462,18 +547,28 @@ class ConfigService:
         获取 AI 配置
 
         Returns:
-            配置字典，如果不存在则返回 None
+            配置字典，不存在时返回 None
         """
         config_file = self._get_ai_config_file()
 
-        if not config_file.exists():
-            return None
+        if config_file.exists():
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if isinstance(payload, dict):
+                    save_state_json(CATEGORY_AI_CONFIG, "default", payload, scope="")
+                    return payload
+            except (json.JSONDecodeError, OSError):
+                pass
 
-        try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return None
+        db_config = load_state_json(CATEGORY_AI_CONFIG, "default", scope="")
+        if isinstance(db_config, dict):
+            try:
+                self._write_json_file(config_file, db_config)
+            except OSError:
+                pass
+            return db_config
+        return None
 
     def save_ai_config(
         self,
@@ -502,11 +597,12 @@ class ConfigService:
         config["base_url"] = base_url if base_url else None
         config["model"] = model if model else None
 
+        save_state_json(CATEGORY_AI_CONFIG, "default", config, scope="")
+
         config_file = self._get_ai_config_file()
 
         try:
-            with open(config_file, "w", encoding="utf-8") as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+            self._write_json_file(config_file, config)
             return True
         except OSError:
             return False
@@ -518,6 +614,8 @@ class ConfigService:
         Returns:
             是否成功删除
         """
+        delete_state(CATEGORY_AI_CONFIG, "default", scope="")
+
         config_file = self._get_ai_config_file()
 
         if not config_file.exists():
@@ -591,26 +689,35 @@ class ConfigService:
 
         override_data_dir = load_data_dir_override()
         default_settings = {
-            "sign_interval": None,  # None 表示使用随机 1-120 秒
+            "sign_interval": None,
             "log_retention_days": 7,
             "data_dir": str(override_data_dir) if override_data_dir else None,
         }
 
-        if not config_file.exists():
-            return default_settings
+        if config_file.exists():
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+                if isinstance(settings, dict):
+                    for key, value in default_settings.items():
+                        if key not in settings:
+                            settings[key] = value
+                    save_state_json(CATEGORY_GLOBAL_SETTINGS, "default", settings, scope="")
+                    return settings
+            except (json.JSONDecodeError, OSError):
+                pass
 
-        try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-                if not isinstance(settings, dict):
-                    return default_settings
-                # 合并默认设置
-                for key, value in default_settings.items():
-                    if key not in settings:
-                        settings[key] = value
-                return settings
-        except (json.JSONDecodeError, OSError):
-            return default_settings
+        db_settings = load_state_json(CATEGORY_GLOBAL_SETTINGS, "default", scope="")
+        if isinstance(db_settings, dict):
+            merged = dict(default_settings)
+            merged.update(db_settings)
+            try:
+                self._write_json_file(config_file, merged)
+            except OSError:
+                pass
+            return merged
+
+        return default_settings
 
     def save_global_settings(self, settings: Dict) -> bool:
         """
@@ -640,9 +747,10 @@ class ConfigService:
             clear_data_dir_override()
             merged["data_dir"] = None
 
+        save_state_json(CATEGORY_GLOBAL_SETTINGS, "default", merged, scope="")
+
         try:
-            with open(config_file, "w", encoding="utf-8") as f:
-                json.dump(merged, f, ensure_ascii=False, indent=2)
+            self._write_json_file(config_file, merged)
             return True
         except OSError:
             return False
@@ -662,31 +770,44 @@ class ConfigService:
         获取 Telegram API 配置
 
         Returns:
-            配置字典，包含 api_id, api_hash, is_custom (是否为自定义配置)
+            配置字典，包含 api_id、api_hash、is_custom
         """
         config_file = self._get_telegram_config_file()
 
-        # 默认配置
         default_config = {
             "api_id": self.DEFAULT_TG_API_ID,
             "api_hash": self.DEFAULT_TG_API_HASH,
             "is_custom": False,
         }
 
-        if not config_file.exists():
-            return default_config
-
-        try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                config = json.load(f)
-                # 如果有自定义配置，标记为自定义
+        if config_file.exists():
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    config = json.load(f)
                 if config.get("api_id") and config.get("api_hash"):
                     config["is_custom"] = True
+                    save_state_json(CATEGORY_TELEGRAM_CONFIG, "default", config, scope="")
                     return config
-                else:
-                    return default_config
-        except (json.JSONDecodeError, OSError):
-            return default_config
+                return default_config
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        db_config = load_state_json(CATEGORY_TELEGRAM_CONFIG, "default", scope="")
+        if isinstance(db_config, dict) and db_config.get("api_id") and db_config.get("api_hash"):
+            db_config["is_custom"] = True
+            try:
+                self._write_json_file(
+                    config_file,
+                    {
+                        "api_id": db_config["api_id"],
+                        "api_hash": db_config["api_hash"],
+                    },
+                )
+            except OSError:
+                pass
+            return db_config
+
+        return default_config
 
     def save_telegram_config(self, api_id: str, api_hash: str) -> bool:
         """
@@ -704,11 +825,12 @@ class ConfigService:
             "api_hash": api_hash,
         }
 
+        save_state_json(CATEGORY_TELEGRAM_CONFIG, "default", config, scope="")
+
         config_file = self._get_telegram_config_file()
 
         try:
-            with open(config_file, "w", encoding="utf-8") as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+            self._write_json_file(config_file, config)
             return True
         except OSError:
             return False
@@ -720,6 +842,8 @@ class ConfigService:
         Returns:
             是否成功重置
         """
+        delete_state(CATEGORY_TELEGRAM_CONFIG, "default", scope="")
+
         config_file = self._get_telegram_config_file()
 
         if not config_file.exists():
