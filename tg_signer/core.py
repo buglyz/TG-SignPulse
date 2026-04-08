@@ -558,12 +558,17 @@ class BaseUserWorker(Generic[ConfigT]):
         ) as fp:
             fp.write(str(user))
 
-    async def login(self, num_of_dialogs=20, print_chat=True):
+    async def login(
+        self, num_of_dialogs=20, print_chat=True, refresh_chats: bool = True
+    ):
         self.log("开始登录...")
         app = self.app
         async with app:
             me = await app.get_me()
             self.set_me(me)
+            if not refresh_chats:
+                await self.app.save_session_string()
+                return
             latest_chats = []
             try:
                 async for dialog in app.get_dialogs(num_of_dialogs):
@@ -633,7 +638,11 @@ class BaseUserWorker(Generic[ConfigT]):
         :param kwargs:
         :return:
         """
+        self.log(f"Sending message to {chat_id}: {text!r}")
         message = await self.app.send_message(chat_id, text, **kwargs)
+        self.log(
+            f"Message sent to {chat_id}: message_id={getattr(message, 'id', None)}"
+        )
         if delete_after is not None:
             self.log(
                 f"Message「{text}」 to {chat_id} will be deleted after {delete_after} seconds."
@@ -1001,6 +1010,56 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 sign_record = json.load(fp)
         return sign_record
 
+    async def _prepare_chat_for_run(self, chat: SignChatV3) -> None:
+        try:
+            await self.app.get_chat(chat.chat_id)
+            return
+        except Exception:
+            pass
+
+        if chat.name:
+            try:
+                resolved = await self.app.get_chat(chat.name)
+                if resolved and getattr(resolved, "id", None) is not None:
+                    if resolved.id != chat.chat_id:
+                        self.log(
+                            f"Resolved chat before run: {chat.chat_id} -> {resolved.id}",
+                            level="WARNING",
+                        )
+                    chat.chat_id = resolved.id
+                    return
+            except Exception:
+                pass
+
+        cached = self._find_cached_chat(chat.chat_id, chat.name)
+        if cached:
+            username = cached.get("username")
+            cached_id = cached.get("id")
+            if username:
+                try:
+                    resolved = await self.app.get_chat(username)
+                    if resolved and getattr(resolved, "id", None) is not None:
+                        if resolved.id != chat.chat_id:
+                            self.log(
+                                f"Resolved cached username before run: {chat.chat_id} -> {resolved.id}",
+                                level="WARNING",
+                            )
+                        chat.chat_id = resolved.id
+                        return
+                except Exception:
+                    pass
+            if cached_id and cached_id != chat.chat_id:
+                try:
+                    await self.app.get_chat(cached_id)
+                    self.log(
+                        f"Resolved cached chat_id before run: {chat.chat_id} -> {cached_id}",
+                        level="WARNING",
+                    )
+                    chat.chat_id = cached_id
+                    return
+                except Exception:
+                    pass
+
     async def sign_a_chat(
         self,
         chat: SignChatV3,
@@ -1018,6 +1077,17 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
             if is_peer_invalid and isinstance(chat.chat_id, int):
                 last_error = e
+                if chat.name:
+                    try:
+                        resolved = await self.app.get_chat(chat.name)
+                        self.log(
+                            f"棰勭儹浼氳瘽浣跨敤閰嶇疆鍚嶇О鎴愬姛: {chat.chat_id} -> {resolved.id}",
+                            level="WARNING",
+                        )
+                        chat.chat_id = resolved.id
+                        return
+                    except Exception as e2:
+                        last_error = e2
                 # First attempt: If it's a positive ID, try get_users (which may still fail if it's completely unknown)
                 if chat.chat_id > 0:
                     try:
@@ -1134,11 +1204,19 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         self, num_of_dialogs=20, only_once: bool = False, force_rerun: bool = False
     ):
         if self.user is None:
-            await self.login(num_of_dialogs, print_chat=True)
+            await self.login(
+                num_of_dialogs,
+                print_chat=False,
+                refresh_chats=False,
+            )
 
         config = self.load_config(self.cfg_cls)
         if config.requires_ai:
             self.ensure_ai_cfg()
+
+        async with self.app:
+            for chat in config.chats:
+                await self._prepare_chat_for_run(chat)
 
         sign_record = self.load_sign_record()
         chat_ids = [c.chat_id for c in config.chats]
@@ -1437,6 +1515,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return await self.send_message(chat.chat_id, action.text, chat.delete_after)
         elif isinstance(action, SendDiceAction):
             return await self.send_dice(chat.chat_id, action.dice, chat.delete_after)
+        required_reply_actions = (
+            ClickKeyboardByTextAction,
+            ReplyByCalculationProblemAction,
+            ChooseOptionByImageAction,
+            ReplyByImageRecognitionAction,
+            ClickButtonByCalculationProblemAction,
+        )
         self.context.waiter.add(chat.chat_id)
         start = time.perf_counter()
         last_message = None
@@ -1472,16 +1557,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         return None
                     self.log(f"忽略消息: {readable_message(message)}")
             # Fallback: try recent history in case message handlers missed the reply.
-            if isinstance(
-                action,
-                (
-                    ClickKeyboardByTextAction,
-                    ReplyByCalculationProblemAction,
-                    ChooseOptionByImageAction,
-                    ReplyByImageRecognitionAction,
-                    ClickButtonByCalculationProblemAction,
-                ),
-            ):
+            if isinstance(action, required_reply_actions):
                 try:
                     self.log("等待超时，尝试从历史消息中查找按钮", level="WARNING")
                     async for message in self.app.get_chat_history(chat.chat_id, limit=5):
@@ -1503,12 +1579,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     self.log(f"历史消息回退失败: {e}", level="WARNING")
 
             self.log(f"等待超时: \nchat: \n{chat} \naction: {action}", level="WARNING")
-            if isinstance(
-                action,
-                (ClickKeyboardByTextAction, ClickButtonByCalculationProblemAction),
-            ):
+            if isinstance(action, required_reply_actions):
                 raise RuntimeError(
-                    f"Target button not found within {timeout}s. chat_id={chat.chat_id}, action={action}"
+                    f"Timed out waiting for a valid bot response within {timeout}s. chat_id={chat.chat_id}, action={action}"
                 )
             return None
         finally:
@@ -1830,7 +1903,11 @@ class UserMonitor(BaseUserWorker[MonitorConfig]):
 
     async def run(self, num_of_dialogs=20):
         if self.user is None:
-            await self.login(num_of_dialogs, print_chat=True)
+            await self.login(
+                num_of_dialogs,
+                print_chat=False,
+                refresh_chats=False,
+            )
 
         cfg = self.load_config(self.cfg_cls)
         if cfg.requires_ai:
